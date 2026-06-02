@@ -60,10 +60,6 @@ wget -N https://raw.githubusercontent.com/HK-BEUP/V2bX-script/master/install.sh 
 GOEXPERIMENT=jsonv2 go build -v -o build_assets/V2bX -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor" -trimpath -ldflags "-X 'github.com/InazumaV/V2bX/cmd.version=$version' -s -w -buildid="
 ```
 
-## 配置文件及详细使用教程
-
-[详细使用教程](https://v2bx.v-50.me/)
-
 ## 免责声明
 
 * 此项目用于本人自用，因此本人不能保证向后兼容性。
