@@ -208,6 +208,8 @@ def main():
         evidence['fixture_service_stopped'] = not u.Systemd().active()
         evidence['fixture_backup'] = str(temp)
         args.output.write_text(json.dumps(evidence, indent=2) + '\n')
+        # Public synthetic test metadata only; backups/config remain root-only.
+        args.output.chmod(0o644)
 
 
 if __name__ == '__main__':
