@@ -1,0 +1,44 @@
+name: Publish authorized fixed Xray release
+on:
+  push:
+    branches: [beup/release-20260912]
+    paths:
+      - .github/workflows/publish-verified.yml
+      - release/publish_verified.py
+      - release/public_bootstrap_smoke.py
+      - release/RELEASE_NOTES.md
+concurrency:
+  group: beup-fixed-xray-release-rc1
+  cancel-in-progress: false
+permissions:
+  contents: read
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xray-candidate
+          run-id: 34680220802
+          github-token: ${{ github.token }}
+          path: candidate-artifacts
+      - name: Prepare and verify public package without changing latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 release/publish_verified.py prepare --artifacts candidate-artifacts --notes release/RELEASE_NOTES.md
+      - name: Wait for verified installer entry then activate latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 release/publish_verified.py activate --artifacts candidate-artifacts --notes release/RELEASE_NOTES.md
+      - name: Public one-key install and management upgrade on disposable host
+        run: |
+          sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" PYTHONDONTWRITEBYTECODE=1 \
+            python3 release/public_bootstrap_smoke.py
