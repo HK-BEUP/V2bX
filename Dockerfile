@@ -1,10 +1,10 @@
 # Build go
-FROM golang:1.25.0-alpine AS builder
+FROM golang:1.26.5-alpine AS builder
 WORKDIR /app
 COPY . .
 ENV CGO_ENABLED=0
 RUN GOEXPERIMENT=jsonv2 go mod download
-RUN GOEXPERIMENT=jsonv2 go build -v -o V2bX -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor"
+RUN GOEXPERIMENT=jsonv2 go build -mod=readonly -trimpath -o V2bX -tags xray
 
 # Release
 FROM  alpine

@@ -1,183 +1,61 @@
-name: Build and Release
-
+# Replace .github/workflows/release.yml; artifact-only, no automatic publication.
+name: HK-BEUP Xray candidate
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - master
-      - dev_new
-    paths:
-      - "**/*.go"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/release.yml"
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - "**/*.go"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/release.yml"
-  release:
-    types: [published]
-
+    branches: [beup/xray-observe-rc1]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Candidate version, e.g. v25.12.2-beup-observe-rc.1'
+        required: true
+      scripts_sha:
+        description: 'Reviewed full commit SHA of HK-BEUP/V2bX-script'
+        required: true
+permissions:
+  contents: read
 jobs:
-
-  build:
-    strategy:
-      matrix:
-        # Include amd64 on all platforms.
-        goos: [windows, freebsd, linux, darwin]
-        goarch: [amd64, 386]
-        exclude:
-          # Exclude i386 on darwin.
-          - goarch: 386
-            goos: darwin
-        include:
-          # BEIGIN MacOS ARM64
-          - goos: darwin
-            goarch: arm64
-          # END MacOS ARM64
-          # BEGIN Linux ARM 5 6 7
-          - goos: linux
-            goarch: arm
-            goarm: 7
-          - goos: linux
-            goarch: arm
-            goarm: 6
-          - goos: linux
-            goarch: arm
-            goarm: 5
-          # END Linux ARM 5 6 7
-          # BEGIN Android ARM 8
-          - goos: android
-            goarch: arm64
-          # END Android ARM 8
-          # BEGIN Other architectures
-          # BEGIN riscv64 & ARM64
-          - goos: linux
-            goarch: arm64
-          - goos: linux
-            goarch: riscv64
-          # END riscv64 & ARM64
-          # BEGIN MIPS
-          - goos: linux
-            goarch: mips64
-          - goos: linux
-            goarch: mips64le
-          - goos: linux
-            goarch: mipsle
-          - goos: linux
-            goarch: mips
-          # END MIPS
-          # BEGIN PPC
-          - goos: linux
-            goarch: ppc64
-          - goos: linux
-            goarch: ppc64le
-          # END PPC
-          # BEGIN FreeBSD ARM
-          - goos: freebsd
-            goarch: arm64
-          - goos: freebsd
-            goarch: arm
-            goarm: 7
-          # END FreeBSD ARM
-          # BEGIN S390X
-          - goos: linux
-            goarch: s390x
-          # END S390X
-          # END Other architectures
-      fail-fast: false
-
-    runs-on: ubuntu-latest
+  verify-and-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
-      GOOS: ${{ matrix.goos }}
-      GOARCH: ${{ matrix.goarch }}
-      GOARM: ${{ matrix.goarm }}
-      CGO_ENABLED: 0
+      GOEXPERIMENT: jsonv2
+      GOTOOLCHAIN: local
+      VERSION: ${{ inputs.version || 'v25.12.2-beup-observe-rc.1' }}
+      SCRIPTS_SHA: ${{ inputs.scripts_sha || 'b74ad979a2199e2a733dbfb14cd2881a11d13c40' }}
     steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v4
-      - name: Show workflow information
-        id: get_filename
-        run: |
-          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM$GOMIPS\"].friendlyName" -r < .github/build/friendly-filenames.json)
-          echo "GOOS: $GOOS, GOARCH: $GOARCH, GOARM: $GOARM, GOMIPS: $GOMIPS, RELEASE_NAME: $_NAME"
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
         with:
-          go-version: '1.25.0'
-
-      - name: Get project dependencies
-        run: |
-          go mod download
-      - name: Get release version
-        if: ${{ github.event_name == 'release' }}
-        run: |
-          echo "version=$(echo $GITHUB_REF | cut -d / -f 3)" >> $GITHUB_ENV
-      - name: Get other version
-        if: ${{ github.event_name != 'release' }}
-        run: |
-          echo "version=${{ github.sha }}" >> $GITHUB_ENV
-      - name: Build V2bX
-        run: |
-          echo "version: $version"
-          mkdir -p build_assets
-          GOEXPERIMENT=jsonv2 go build -v -o build_assets/V2bX -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor" -trimpath -ldflags "-X 'github.com/InazumaV/V2bX/cmd.version=$version' -s -w -buildid="
-
-      - name: Build Mips softfloat V2bX
-        if: matrix.goarch == 'mips' || matrix.goarch == 'mipsle'
-        run: |
-          echo "version: $version"
-          GOEXPERIMENT=jsonv2 GOMIPS=softfloat go build -v -o build_assets/V2bX_softfloat -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor" -trimpath -ldflags "-X 'github.com/InazumaV/V2bX/cmd.version=$version' -s -w -buildid="
-      - name: Rename Windows V2bX
-        if: matrix.goos == 'windows'
-        run: |
-          cd ./build_assets || exit 1
-          mv V2bX V2bX.exe
-      - name: Prepare to release
-        run: |
-          cp ${GITHUB_WORKSPACE}/README.md ./build_assets/README.md
-          cp ${GITHUB_WORKSPACE}/LICENSE ./build_assets/LICENSE
-          cp ${GITHUB_WORKSPACE}/example/*.json ./build_assets/
-          LIST=('geoip' 'geosite')
-          for i in "${LIST[@]}"
-          do
-            DOWNLOAD_URL="https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/${i}.dat"
-            FILE_NAME="${i}.dat"
-            echo -e "Downloading ${DOWNLOAD_URL}..."
-            curl -L "${DOWNLOAD_URL}" -o ./build_assets/${FILE_NAME}
-          done
-      - name: Create ZIP archive
+          persist-credentials: false
+      - name: Validate dispatch values
         shell: bash
         run: |
-          pushd build_assets || exit 1
-          touch -mt $(date +%Y01010000) *
-          zip -9vr ../V2bX-$ASSET_NAME.zip .
-          popd || exit 1
-          FILE=./V2bX-$ASSET_NAME.zip
-          DGST=$FILE.dgst
-          for METHOD in {"md5","sha1","sha256","sha512"}
-          do
-            openssl dgst -$METHOD $FILE | sed 's/([^)]*)//g' >>$DGST
-          done
-      - name: Change the name
+          [[ "$VERSION" =~ ^v[0-9][A-Za-z0-9._-]{0,99}$ ]]
+          [[ "$SCRIPTS_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@v4
+        with:
+          repository: HK-BEUP/V2bX-script
+          ref: ${{ env.SCRIPTS_SHA }}
+          path: _install
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+      - name: Installer fault tests
         run: |
-          mv build_assets V2bX-$ASSET_NAME
-      - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v4
+          cd _install
+          python3 -m unittest -v test_upgrade.py
+          bash -n install.sh V2bX.sh
+      - name: Observer and core race regression
+        run: go test -count=1 -mod=readonly -race -tags xray -skip TestREALITYVisionEncryptedLoopback ./common/beupobserve ./core/xray/... ./cmd
+      - name: Real REALITY and Vision acceptance
+        # The pinned Xray Vision implementation uses unsafe pointer arithmetic;
+        # normal build acceptance is separate from race/checkptr regression.
+        run: go test -count=3 -timeout 120s -mod=readonly -tags xray -run TestREALITYVisionEncryptedLoopback ./core/xray
+      - name: Build both Linux packages
+        run: python3 release/package.py --source . --scripts _install --version "$VERSION" --output candidate-artifacts
+      - uses: actions/upload-artifact@v4
         with:
-          name: V2bX-${{ steps.get_filename.outputs.ASSET_NAME }}
-          path: |
-            ./V2bX-${{ steps.get_filename.outputs.ASSET_NAME }}/*
-      - name: Upload binaries to release
-        uses: svenstaro/upload-release-action@v2
-        if: github.event_name == 'release'
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ./V2bX-${{ steps.get_filename.outputs.ASSET_NAME }}.zip*
-          tag: ${{ github.ref }}
-          file_glob: true
+          name: xray-candidate
+          path: candidate-artifacts/*
+          if-no-files-found: error
+          retention-days: 14

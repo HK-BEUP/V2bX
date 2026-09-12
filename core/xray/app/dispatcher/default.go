@@ -285,6 +285,7 @@ func (d *DefaultDispatcher) shouldOverride(ctx context.Context, result SniffResu
 
 // Dispatch implements routing.Dispatcher.
 func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destination) (*transport.Link, error) {
+	observeAuthenticatedRequest(ctx, destination)
 	if !destination.IsValid() {
 		panic("Dispatcher: Invalid destination.")
 	}
@@ -344,6 +345,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 
 // DispatchLink implements routing.Dispatcher.
 func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.Destination, outbound *transport.Link) error {
+	observeAuthenticatedRequest(ctx, destination)
 	if !destination.IsValid() {
 		return errors.New("Dispatcher: Invalid destination.")
 	}

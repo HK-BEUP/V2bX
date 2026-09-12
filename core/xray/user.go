@@ -3,6 +3,7 @@ package xray
 import (
 	"context"
 	"fmt"
+	beupobserve "github.com/InazumaV/V2bX/common/beupobserve"
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/common/counter"
@@ -43,6 +44,7 @@ func (c *Xray) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeInfo) e
 		if err != nil {
 			return err
 		}
+		beupobserve.Unbind(tag, user)
 		delete(c.users.uidMap, user)
 		if v, ok := c.dispatcher.Counter.Load(tag); ok {
 			tc := v.(*counter.TrafficCounter)
@@ -119,7 +121,7 @@ func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 	if err != nil {
 		return 0, fmt.Errorf("get user manager error: %s", err)
 	}
-	for _, u := range users {
+	for i, u := range users {
 		mUser, err := u.ToMemoryUser()
 		if err != nil {
 			return 0, err
@@ -128,6 +130,7 @@ func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 		if err != nil {
 			return 0, err
 		}
+		beupobserve.Bind(p.Tag, format.UserTag(p.Tag, p.Users[i].Uuid), p.Users[i].Id)
 	}
 	return len(users), nil
 }

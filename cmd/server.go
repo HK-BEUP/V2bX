@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	beupobserve "github.com/InazumaV/V2bX/common/beupobserve"
 	"os"
 	"os/signal"
 	"runtime"
@@ -62,6 +63,11 @@ func serverHandle(_ *cobra.Command, _ []string) {
 		log.SetOutput(f)
 	}
 	limiter.Init()
+	stopObservation, observationErr := beupobserve.StartFromEnvironment()
+	if observationErr != nil {
+		log.Error("BEUP observation settings rejected; proxy continues without telemetry")
+	}
+	defer stopObservation()
 	log.Info("Start V2bX...")
 	vc, err := vCore.NewCore(c.CoresConfig)
 	if err != nil {
@@ -86,6 +92,7 @@ func serverHandle(_ *cobra.Command, _ []string) {
 	sdns := os.Getenv("SING_DNS_PATH")
 	if watch {
 		err = c.Watch(config, xdns, sdns, func() {
+			beupobserve.Reset()
 			nodes.Close()
 			err = vc.Close()
 			if err != nil {
