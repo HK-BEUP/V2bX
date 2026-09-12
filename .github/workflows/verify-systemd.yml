@@ -1,0 +1,52 @@
+name: HK-BEUP isolated systemd release gate
+on:
+  push:
+    branches: [beup/release-20260912]
+    paths:
+      - .github/workflows/verify-systemd.yml
+      - release/systemd_acceptance.py
+permissions:
+  contents: read
+  actions: read
+jobs:
+  systemd:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: HK-BEUP/V2bX-script
+          ref: b74ad979a2199e2a733dbfb14cd2881a11d13c40
+          path: _install
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xray-candidate
+          run-id: 34680220802
+          github-token: ${{ github.token }}
+          path: candidate-artifacts
+      - name: Verify fixed candidate and regression
+        run: |
+          cd candidate-artifacts
+          sha256sum -c SHA256SUMS
+          cd ../_install
+          python3 -m unittest -v test_upgrade.py
+          bash -n install.sh V2bX.sh
+      - name: Real systemd fresh install, state preservation and rollback
+        run: |
+          sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" PYTHONDONTWRITEBYTECODE=1 \
+            python3 release/systemd_acceptance.py --artifacts candidate-artifacts --output systemd-result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: systemd-result-${{ matrix.runner }}
+          path: systemd-result.json
+          if-no-files-found: error
+          retention-days: 30
