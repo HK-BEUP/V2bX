@@ -16,7 +16,7 @@ func sample(t *testing.T) (*Observer, *atomic.Int64) {
 	t.Helper()
 	clock := new(atomic.Int64)
 	clock.Store(1800000000)
-	o, err := New(Config{"demo-hk", "synthetic-v1", map[string]map[int]string{"test-inbound": {2: testSubject}}, func() time.Time { return time.Unix(clock.Load(), 0) }})
+	o, err := New(Config{"demo-hk", "synthetic-v1", map[string]map[int]string{"test-inbound": {2: testSubject}}, func() time.Time { return time.Unix(clock.Load(), 0) }, false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestClockAndPartialWindow(t *testing.T) {
 	if _, err := o.Snapshot(time.Unix(1800000180, 0)); err == nil {
 		t.Fatal("window replay")
 	}
-	partial, err := New(Config{"node", "revision", nil, func() time.Time { return time.Unix(1800000010, 0) }})
+	partial, err := New(Config{"node", "revision", nil, func() time.Time { return time.Unix(1800000010, 0) }, false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestChunksAndDisabledGlobal(t *testing.T) {
 	for i := 1; i <= 401; i++ {
 		bindings[i] = fmt.Sprintf("%032x", i)
 	}
-	o, err := New(Config{"demo-hk", "synthetic-v1", map[string]map[int]string{"tag": bindings}, func() time.Time { return time.Unix(1800000000, 0) }})
+	o, err := New(Config{"demo-hk", "synthetic-v1", map[string]map[int]string{"tag": bindings}, func() time.Time { return time.Unix(1800000000, 0) }, false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestRegistrationValidation(t *testing.T) {
 	}
 }
 func BenchmarkObserver(b *testing.B) {
-	o, _ := New(Config{"node", "v1", map[string]map[int]string{"tag": {2: testSubject}}, func() time.Time { return time.Unix(1800000000, 0) }})
+	o, _ := New(Config{"node", "v1", map[string]map[int]string{"tag": {2: testSubject}}, func() time.Time { return time.Unix(1800000000, 0) }, false})
 	o.Bind("tag", "label", 2)
 	b.ReportAllocs()
 	b.ResetTimer()

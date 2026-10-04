@@ -104,20 +104,32 @@ func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {
 	return
 }
 
+// Non-nil is explicit opt-in; keys are provisioned locally, never in panel JSON.
+type TransferAccountingConfig struct {
+	Epoch     string `json:"Epoch"`
+	Directory string `json:"Directory"`
+}
+
+type LegacyAccountingConfig struct {
+	Directory string `json:"Directory"`
+}
+
 type Options struct {
-	Name                   string          `json:"Name"`
-	Core                   string          `json:"Core"`
-	CoreName               string          `json:"CoreName"`
-	ListenIP               string          `json:"ListenIP"`
-	SendIP                 string          `json:"SendIP"`
-	DeviceOnlineMinTraffic int64           `json:"DeviceOnlineMinTraffic"`
-	ReportMinTraffic       int64           `json:"ReportMinTraffic"`
-	LimitConfig            LimitConfig     `json:"LimitConfig"`
-	RawOptions             json.RawMessage `json:"RawOptions"`
-	XrayOptions            *XrayOptions    `json:"XrayOptions"`
-	SingOptions            *SingOptions    `json:"SingOptions"`
-	Hysteria2ConfigPath    string          `json:"Hysteria2ConfigPath"`
-	CertConfig             *CertConfig     `json:"CertConfig"`
+	LegacyAccounting       *LegacyAccountingConfig   `json:"LegacyAccounting"`
+	TransferAccounting     *TransferAccountingConfig `json:"TransferAccounting"`
+	Name                   string                    `json:"Name"`
+	Core                   string                    `json:"Core"`
+	CoreName               string                    `json:"CoreName"`
+	ListenIP               string                    `json:"ListenIP"`
+	SendIP                 string                    `json:"SendIP"`
+	DeviceOnlineMinTraffic int64                     `json:"DeviceOnlineMinTraffic"`
+	ReportMinTraffic       int64                     `json:"ReportMinTraffic"`
+	LimitConfig            LimitConfig               `json:"LimitConfig"`
+	RawOptions             json.RawMessage           `json:"RawOptions"`
+	XrayOptions            *XrayOptions              `json:"XrayOptions"`
+	SingOptions            *SingOptions              `json:"SingOptions"`
+	Hysteria2ConfigPath    string                    `json:"Hysteria2ConfigPath"`
+	CertConfig             *CertConfig               `json:"CertConfig"`
 }
 
 func (o *Options) UnmarshalJSON(data []byte) error {
@@ -125,6 +137,9 @@ func (o *Options) UnmarshalJSON(data []byte) error {
 	err := json.Unmarshal(data, (*opt)(o))
 	if err != nil {
 		return err
+	}
+	if o.TransferAccounting != nil && o.LegacyAccounting != nil {
+		return fmt.Errorf("accounting modes are mutually exclusive")
 	}
 	switch o.Core {
 	case "xray":

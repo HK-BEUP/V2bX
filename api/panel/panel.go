@@ -25,6 +25,8 @@ type Client struct {
 	NodeId           int
 	nodeEtag         string
 	userEtag         string
+	trafficEpoch     string
+	legacyAccounting bool
 	responseBodyHash string
 	UserList         *UserListBody
 	AliveMap         *AliveMap
@@ -36,7 +38,7 @@ func New(c *conf.ApiConfig) (*Client, error) {
 		client = resty.NewWithLocalAddr(&net.TCPAddr{
 			IP: net.ParseIP(c.APISendIP),
 		})
-	} else {	
+	} else {
 		client = resty.New()
 	}
 	client.SetRetryCount(3)
@@ -46,6 +48,10 @@ func New(c *conf.ApiConfig) (*Client, error) {
 		client.SetTimeout(5 * time.Second)
 	}
 	client.OnError(func(req *resty.Request, err error) {
+		if req.Header.Get("X-Beup-Traffic-Epoch") != "" || req.Header.Get("X-Beup-Legacy-Accounting") != "" {
+			logrus.Error("Reliable panel request failed; private request details suppressed")
+			return
+		}
 		var v *resty.ResponseError
 		if errors.As(err, &v) {
 			// v.Response contains the last response from the server

@@ -3,6 +3,7 @@ package xray
 import (
 	"context"
 	"fmt"
+	"github.com/InazumaV/V2bX/common/beupguard"
 	beupobserve "github.com/InazumaV/V2bX/common/beupobserve"
 
 	"github.com/InazumaV/V2bX/api/panel"
@@ -45,10 +46,14 @@ func (c *Xray) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeInfo) e
 			return err
 		}
 		beupobserve.Unbind(tag, user)
-		delete(c.users.uidMap, user)
-		if v, ok := c.dispatcher.Counter.Load(tag); ok {
-			tc := v.(*counter.TrafficCounter)
-			tc.Delete(user)
+		beupguard.Unbind(tag, user)
+		// Reliable reporting retains retired identities and sub-threshold tail bytes.
+		if _, reliable := c.transfers.Load(tag); !reliable {
+			delete(c.users.uidMap, user)
+			if v, ok := c.dispatcher.Counter.Load(tag); ok {
+				tc := v.(*counter.TrafficCounter)
+				tc.Delete(user)
+			}
 		}
 		if v, ok := c.dispatcher.LinkManagers.Load(user); ok {
 			lm := v.(*dispatcher.LinkManager)
@@ -60,6 +65,9 @@ func (c *Xray) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeInfo) e
 }
 
 func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic, error) {
+	if _, reliable := x.transfers.Load(tag); reliable {
+		return nil, fmt.Errorf("reliable accounting requires cumulative delivery, legacy reporting refused")
+	}
 	trafficSlice := make([]panel.UserTraffic, 0)
 	x.users.mapLock.RLock()
 	defer x.users.mapLock.RUnlock()
@@ -99,7 +107,11 @@ func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 	c.users.mapLock.Lock()
 	defer c.users.mapLock.Unlock()
 	for i := range p.Users {
-		c.users.uidMap[format.UserTag(p.Tag, p.Users[i].Uuid)] = p.Users[i].Id
+		label := format.UserTag(p.Tag, p.Users[i].Uuid)
+		if err := c.bindTransfer(p.Tag, label, p.Users[i].Id, p.Users[i].Uuid); err != nil {
+			return 0, err
+		}
+		c.users.uidMap[label] = p.Users[i].Id
 	}
 	var users []*protocol.User
 	switch p.NodeInfo.Type {
@@ -130,7 +142,9 @@ func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 		if err != nil {
 			return 0, err
 		}
-		beupobserve.Bind(p.Tag, format.UserTag(p.Tag, p.Users[i].Uuid), p.Users[i].Id)
+		beupobserve.Bind(p.Tag, format.UserTag(p.Tag, p.Users[i].Uuid), p.Users[i].Id, p.Users[i].Uuid)
+		beupguard.Bind(p.Tag, format.UserTag(p.Tag, p.Users[i].Uuid), p.Users[i].Id, p.Users[i].Uuid)
+		beupguard.RegisterAuthorization(p.Tag, format.UserTag(p.Tag, p.Users[i].Uuid), p.Users[i].SubscriptionGrant)
 	}
 	return len(users), nil
 }

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/InazumaV/V2bX/api/panel"
+	"github.com/InazumaV/V2bX/common/beuptransfer"
 	"github.com/InazumaV/V2bX/conf"
 )
 
@@ -166,4 +167,19 @@ func (s *Selector) Type() string {
 	}
 	t += ")"
 	return t
+}
+
+// Explicit opt-in after AddNode; unsupported cores cannot silently downgrade.
+func (s *Selector) EnableTransferAccounting(tag, epoch, nodeType string) (*beuptransfer.GuardAdapter, error) {
+	c, ok := s.nodes.Load(tag)
+	if !ok {
+		return nil, beuptransfer.ErrCoverage
+	}
+	capable, ok := c.(interface {
+		EnableTransferAccounting(string, string, string) (*beuptransfer.GuardAdapter, error)
+	})
+	if !ok {
+		return nil, beuptransfer.ErrCoverage
+	}
+	return capable.EnableTransferAccounting(tag, epoch, nodeType)
 }

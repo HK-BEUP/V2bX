@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/InazumaV/V2bX/api/panel"
+	"github.com/InazumaV/V2bX/common/beupguard"
+	beupobserve "github.com/InazumaV/V2bX/common/beupobserve"
 	"github.com/InazumaV/V2bX/conf"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/inbound"
@@ -72,13 +74,20 @@ func (c *Xray) addOutbound(config *core.OutboundHandlerConfig) error {
 }
 
 func (c *Xray) DelNode(tag string) error {
+	_, reliable := c.transfers.Load(tag)
 	err := c.removeInbound(tag)
 	if err != nil {
 		return fmt.Errorf("remove in error: %s", err)
 	}
+	c.invalidateTransfer(tag)
+	beupguard.UnbindTag(tag)
+	beupobserve.UnbindTag(tag)
 	err = c.removeOutbound(tag)
 	if err != nil {
 		return fmt.Errorf("remove out error: %s", err)
+	}
+	if reliable {
+		c.purgeTransfer(tag)
 	}
 	return nil
 }

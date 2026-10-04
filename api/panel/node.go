@@ -1,6 +1,7 @@
 package panel
 
 import (
+"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -149,15 +150,17 @@ type Rules struct {
 	Protocol []string
 }
 
-func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
+func (c *Client) GetNodeInfo() (node *NodeInfo, err error) { return c.GetNodeInfoContext(context.Background()) }
+func (c *Client) GetNodeInfoContext(ctx context.Context) (node *NodeInfo, err error) {
 	const path = "/api/v1/server/UniProxy/config"
 	r, err := c.client.
-		R().
+		R().SetContext(ctx).
 		SetHeader("If-None-Match", c.nodeEtag).
 		ForceContentType("application/json").
 		Get(path)
 
-	if r.StatusCode() == 304 {
+	if err != nil || r == nil { return nil, fmt.Errorf("node configuration request failed") }
+ if r.StatusCode() == 304 {
 		return nil, nil
 	}
 	hash := sha256.Sum256(r.Body())
@@ -165,8 +168,7 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 	if c.responseBodyHash == newBodyHash {
 		return nil, nil
 	}
-	c.responseBodyHash = newBodyHash
-	c.nodeEtag = r.Header().Get("ETag")
+	
 	if err = c.checkResponse(r, path, err); err != nil {
 		return nil, err
 	}
@@ -305,6 +307,7 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 	}
 
 	// set interval
+ if cm == nil || cm.BaseConfig == nil || cm.BaseConfig.PushInterval == nil || cm.BaseConfig.PullInterval == nil { return nil, fmt.Errorf("node intervals missing") }
 	node.PushInterval = intervalToTime(cm.BaseConfig.PushInterval)
 	node.PullInterval = intervalToTime(cm.BaseConfig.PullInterval)
 
@@ -313,7 +316,9 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 	cm.Routes = nil
 	cm.BaseConfig = nil
 
-	return node, nil
+	c.responseBodyHash = newBodyHash
+ c.nodeEtag = r.Header().Get("ETag")
+ return node, nil
 }
 
 func intervalToTime(i interface{}) time.Duration {

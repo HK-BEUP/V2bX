@@ -25,8 +25,12 @@ type Settings struct {
 	ObservationKey   string                    `json:"observation_key"`
 	Bindings         map[string]map[int]string `json:"bindings"`
 	Registration     *RegistrationSource       `json:"registration,omitempty"`
+	TCPDialMetrics   bool                      `json:"tcp_dial_metrics,omitempty"`
 }
 type Runtime struct {
+	diagnosticQueue                                                                chan diagnosticRecord
+	diagnosticStartedAt                                                            int64
+	diagnosticSkipped, diagnosticFailed                                            atomic.Uint64
 	Observer                                                                       *Observer
 	settings                                                                       Settings
 	client                                                                         *http.Client
@@ -71,11 +75,11 @@ func NewRuntime(s Settings) (*Runtime, error) {
 	if !s.Enabled || s.Mode != "observe" || !validEndpoint(s.Endpoint) || len(s.ObservationKey) < 32 {
 		return nil, errors.New("invalid observation-only runtime settings")
 	}
-	o, e := New(Config{Node: s.Node, IdentityRevision: s.IdentityRevision, Bindings: s.Bindings})
+	o, e := New(Config{Node: s.Node, IdentityRevision: s.IdentityRevision, Bindings: s.Bindings, TCPDialMetrics: s.TCPDialMetrics})
 	if e != nil {
 		return nil, e
 	}
-	r := &Runtime{Observer: o, settings: s, queue: make(chan Report, 64), client: &http.Client{
+	r := &Runtime{Observer: o, settings: s, queue: make(chan Report, 64), diagnosticQueue: make(chan diagnosticRecord, 1), diagnosticStartedAt: time.Now().UnixMilli(), client: &http.Client{
 		Timeout:       2 * time.Second,
 		Transport:     &http.Transport{Proxy: nil, MaxIdleConns: 2, MaxIdleConnsPerHost: 2, IdleConnTimeout: 60 * time.Second},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -211,7 +215,12 @@ func (r *Runtime) send(ctx context.Context, report Report) bool {
 	r.Failed.Add(1)
 	return false
 }
-func (r *Runtime) Run(ctx context.Context) {
+func (r *Runtime) Run(ctx context.Context) { r.runWithDiagnosticSink(ctx, os.Stderr) }
+
+func (r *Runtime) runWithDiagnosticSink(ctx context.Context, sink io.Writer) {
+	// One bounded local-log worker, never joined on proxy shutdown: a stalled
+	// stderr must not stall sampling, delivery, or service cancellation.
+	go r.runDiagnostics(ctx, sink)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -240,6 +249,9 @@ func (r *Runtime) Run(ctx context.Context) {
 			if reports, e := r.Observer.Snapshot(now); e == nil {
 				for _, report := range reports {
 					r.Enqueue(report)
+				}
+				if len(reports) > 0 {
+					r.offerDiagnostics(now, reports[0])
 				}
 			}
 		}
@@ -278,9 +290,7 @@ func Reset() {
 		o.mu.Lock()
 		o.bindings = map[[32]byte]string{}
 		o.authRefs = map[[32]byte]authRef{}
-		o.accounts = map[string]*counts{}
-		o.edges = 0
-		o.partial = true
+		o.resetWindowsLocked()
 		o.mu.Unlock()
 	}
 }

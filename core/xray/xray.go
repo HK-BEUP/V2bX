@@ -30,6 +30,7 @@ func init() {
 
 // Xray Structure
 type Xray struct {
+	transfers                 sync.Map // tag -> opt-in transferState; never enabled by default
 	access                    sync.Mutex
 	Server                    *core.Instance
 	ihm                       inbound.Manager
@@ -188,17 +189,22 @@ func (c *Xray) Start() error {
 	}
 	c.ihm = c.Server.GetFeature(inbound.ManagerType()).(inbound.Manager)
 	c.ohm = c.Server.GetFeature(outbound.ManagerType()).(outbound.Manager)
+	c.users.mapLock.Lock()
 	c.dispatcher = c.Server.GetFeature(routing.DispatcherType()).(*dispatcher.DefaultDispatcher)
+	c.users.mapLock.Unlock()
 	return nil
 }
 
 // Close  the core
 func (c *Xray) Close() error {
+	c.transfers.Range(func(k, v any) bool { c.invalidateTransfer(k.(string)); return true })
 	c.access.Lock()
 	defer c.access.Unlock()
 	c.ihm = nil
 	c.ohm = nil
+	c.users.mapLock.Lock()
 	c.dispatcher = nil
+	c.users.mapLock.Unlock()
 	err := c.Server.Close()
 	if err != nil {
 		return err

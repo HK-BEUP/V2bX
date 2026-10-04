@@ -5,6 +5,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"github.com/InazumaV/V2bX/common/beupguard"
 	"regexp"
 	"strings"
 	"sync"
@@ -307,10 +308,20 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 	if err != nil {
 		return nil, err
 	}
+	next, finished, transferErr := beginTransferDispatch(ctx, destination, outbound)
+	if transferErr != nil {
+		common.Interrupt(inbound.Reader)
+		common.Interrupt(inbound.Writer)
+		common.Interrupt(outbound.Reader)
+		common.Interrupt(outbound.Writer)
+		return nil, transferErr
+	}
+	ctx = next
 	if !sniffingRequest.Enabled {
-		go d.routedDispatch(ctx, outbound, destination, l, "")
+		go func() { defer finished(); d.routedDispatch(ctx, outbound, destination, l, "") }()
 	} else {
 		go func() {
+			defer finished()
 			cReader := &cachedReader{
 				reader: outbound.Reader.(*pipe.Reader),
 			}
@@ -345,6 +356,12 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 
 // DispatchLink implements routing.Dispatcher.
 func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.Destination, outbound *transport.Link) error {
+	next, finished, transferErr := beginTransferDispatch(ctx, destination, outbound)
+	if transferErr != nil {
+		return transferErr
+	}
+	ctx = next
+	defer finished()
 	observeAuthenticatedRequest(ctx, destination)
 	if !destination.IsValid() {
 		return errors.New("Dispatcher: Invalid destination.")
@@ -522,6 +539,47 @@ func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, netw
 }
 
 func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.Link, destination net.Destination, l *limiter.Limiter, protocol string) {
+	// Attach after authentication, before routing/dial. The guard is disabled by
+	// default. Unknown/capacity-limited identities continue without a false block.
+	if beupguard.Enabled() {
+		in := session.InboundFromContext(ctx)
+		if in != nil && in.User != nil {
+			guardCtx, cancel := context.WithCancel(ctx)
+			// In the scoped VLESS/TCP deployment, this socket belongs to the
+			// authenticated credential. Closing it also interrupts Vision raw
+			// copy, without turning off splice for every healthy connection.
+			credentialConn := in.Conn
+			if in.Name != "vless" {
+				credentialConn = nil
+			}
+			closeFlow := func() {
+				cancel()
+				if credentialConn != nil {
+					_ = credentialConn.Close()
+				}
+				common.Interrupt(link.Reader)
+				common.Interrupt(link.Writer)
+			}
+			finish, err := beupguard.Track(in.Tag, in.User.Email, closeFlow)
+			if err == beupguard.ErrIsolated {
+				closeFlow()
+				return
+			}
+			if err == nil {
+				ctx = guardCtx
+				defer cancel()
+				defer finish()
+				// Unknown socket implementations require the cancellable link;
+				// they are not evidence of native VLESS/TCP execution coverage.
+				if credentialConn == nil {
+					beupguard.NoteCoverageFailure(in.Tag)
+					in.CanSpliceCopy = 3
+				}
+			} else {
+				cancel()
+			}
+		}
+	}
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
 

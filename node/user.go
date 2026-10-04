@@ -2,12 +2,14 @@ package node
 
 import (
 	"strconv"
+"errors"
 
 	"github.com/InazumaV/V2bX/api/panel"
 	log "github.com/sirupsen/logrus"
 )
 
 func (c *Controller) reportUserTrafficTask() (err error) {
+ if c.Options.TransferAccounting != nil || c.Options.LegacyAccounting != nil { return errors.New("legacy traffic reset/report disabled for reliable accounting") }
 	userTraffic, _ := c.server.GetUserTrafficSlice(c.tag, true)
 	if len(userTraffic) > 0 {
 		err = c.apiClient.ReportUserTraffic(userTraffic)
@@ -62,12 +64,12 @@ func (c *Controller) reportUserTrafficTask() (err error) {
 func compareUserList(old, new []panel.UserInfo) (deleted, added []panel.UserInfo) {
 	oldMap := make(map[string]int)
 	for i, user := range old {
-		key := user.Uuid + strconv.Itoa(user.SpeedLimit)
+		key := user.Uuid + ":" + strconv.Itoa(user.Id) + ":" + strconv.Itoa(user.SpeedLimit) + ":" + strconv.Itoa(user.DeviceLimit) + ":" + user.SubscriptionGrant
 		oldMap[key] = i
 	}
 
 	for _, user := range new {
-		key := user.Uuid + strconv.Itoa(user.SpeedLimit)
+		key := user.Uuid + ":" + strconv.Itoa(user.Id) + ":" + strconv.Itoa(user.SpeedLimit) + ":" + strconv.Itoa(user.DeviceLimit) + ":" + user.SubscriptionGrant
 		if _, exists := oldMap[key]; !exists {
 			added = append(added, user)
 		} else {

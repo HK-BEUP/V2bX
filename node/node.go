@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+"errors"
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
@@ -37,12 +38,16 @@ func (n *Node) Start(nodes []conf.NodeConfig, core vCore.Core) error {
 	return nil
 }
 
-func (n *Node) Close() {
+func (n *Node) Close() error {
+ var failures []error
 	for _, c := range n.controllers {
+ if c == nil { continue }
 		err := c.Close()
 		if err != nil {
-			panic(err)
+			failures = append(failures, err)
 		}
 	}
-	n.controllers = nil
+if len(failures)>0 { return errors.Join(failures...) }
+ n.controllers = nil
+ return nil
 }

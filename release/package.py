@@ -18,14 +18,16 @@ def main():
     if not re.fullmatch(r'v[0-9][A-Za-z0-9._-]{0,99}',a.version):p.error('invalid version')
     a.source=a.source.resolve();a.scripts=a.scripts.resolve();a.output=a.output.resolve();a.output.mkdir(parents=True,exist_ok=False)
     # Fail closed if the telemetry overlay or real profile acceptance test is missing.
-    for name in ['common/beupobserve/observer.go','core/xray/reality_vision_test.go','BEUP_OBSERVATION.md']:
+    for name in ['common/beupobserve/observer.go','core/xray/reality_vision_test.go','BEUP_OBSERVATION.md','BEUP_LEGACY.md']:
         if not (a.source/name).is_file():raise ValueError('missing observation source/test: '+name)
+    source_files={str(f.relative_to(a.source)):sha(f.read_bytes()) for f in a.source.rglob('*') if f.is_file() and '.git' not in f.parts and (f.suffix=='.go' or f.name in ('go.mod','go.sum'))}
+    source_sha=sha(json.dumps(source_files,sort_keys=True,separators=(',',':')).encode())
     results=[];sums=[]
     for arch,friendly,machine in [('amd64','64',62),('arm64','arm64-v8a',183)]:
         with tempfile.TemporaryDirectory(prefix='beup-build-') as td:
             binary=Path(td)/'V2bX'
-            env=dict(os.environ,GOTOOLCHAIN='local',GOEXPERIMENT='jsonv2',CGO_ENABLED='0',GOOS='linux',GOARCH=arch)
-            subprocess.run(['go','build','-p','2','-mod=readonly','-tags','xray','-trimpath','-ldflags','-X github.com/InazumaV/V2bX/cmd.version='+a.version+' -s -w -buildid=','-o',str(binary),'.'],cwd=a.source,env=env,check=True)
+            env=dict(os.environ,GOMAXPROCS='2',GOTOOLCHAIN='local',GOEXPERIMENT='jsonv2',CGO_ENABLED='0',GOOS='linux',GOARCH=arch)
+            subprocess.run(['go','build','-p','2','-mod=readonly','-buildvcs=false','-tags','xray','-trimpath','-ldflags','-X github.com/InazumaV/V2bX/cmd.version='+a.version+' -s -w -buildid=','-o',str(binary),'.'],cwd=a.source,env=env,check=True)
             data=binary.read_bytes()
             if data[:6]!=b'\x7fELF\x02\x01' or int.from_bytes(data[18:20],'little')!=machine:raise ValueError('bad binary architecture')
             meta=subprocess.check_output(['go','version','-m',str(binary)],text=True)
@@ -33,10 +35,11 @@ def main():
                 if marker not in meta:raise ValueError('bad build metadata')
             files={'V2bX':data}
             for name in ['V2bX.sh','install.sh','upgrade.py','initconfig.py']:files[name]=(a.scripts/name).read_bytes()
-            for name in ['README.md','LICENSE','BEUP_OBSERVATION.md']:files[name]=(a.source/name).read_bytes()
+            for name in ['README.md','LICENSE','BEUP_OBSERVATION.md','BEUP_LEGACY.md']:files[name]=(a.source/name).read_bytes()
             for name in ['geoip.dat','geosite.dat']:files[name]=(a.source/'example'/name).read_bytes()
-            files['config.json']=json.dumps({'Log':{'Level':'info','Output':''},'Cores':[{'Type':'xray','Log':{'Level':'error'},'AssetPath':'/etc/V2bX/'}],'Nodes':[]},indent=2).encode()+b'\n'
-            files['RELEASE.json']=json.dumps({'version':a.version,'cores':['xray'],'profile':'VLESS+TCP+REALITY+Vision','binary_sha256':sha(data),'observation_enabled_by_default':False,'acceptance':'local candidate; production pilot required'},indent=2).encode()+b'\n'
+            files['XRAY_LICENSE']=(a.source/'third_party/xray-core/LICENSE').read_bytes()
+            files['config.json']=json.dumps({'Log':{'Level':'error','Output':'/dev/null'},'Cores':[{'Type':'xray','Log':{'Level':'none','AccessPath':'/dev/null','ErrorPath':'/dev/null'},'AssetPath':'/etc/V2bX/'}],'Nodes':[]},indent=2).encode()+b'\n'
+            files['RELEASE.json']=json.dumps({'version':a.version,'cores':['xray'],'profile':'VLESS+TCP+REALITY+Vision','binary_sha256':sha(data),'source_sha256':source_sha,'observation_enabled_by_default':False,'legacy_accounting_v1':True,'node_logs_enabled_by_default':False,'acceptance':'runtime based on deployed legacy revision2; installation requires per-node panel verification'},indent=2).encode()+b'\n'
             name='V2bX-linux-'+friendly+'.zip';target=a.output/name
             with zipfile.ZipFile(target,'x',compression=zipfile.ZIP_DEFLATED,compresslevel=9) as z:
                 for n,b in sorted(files.items()):

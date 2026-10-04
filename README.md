@@ -1,3 +1,18 @@
+# HK-BEUP V2bX 旧队列增强版
+
+一键安装（Linux/systemd，root，curl + Python 3）：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/HK-BEUP/V2bX-script/master/install.sh)
+```
+
+填写面板地址、API Key、节点编号后确认，自动完成新节点配置与启动。新装使用旧 Redis/Horizon，
+包含持久化重试、批次去重与退出尾流保护，日志默认关闭。已有安装保留原配置与计量方式。
+
+[安装、升级与构建说明](BEUP_LEGACY.md)
+
+---
+
 # V2bX
 
 [![](https://img.shields.io/badge/TgChat-UnOfficialV2Board%E4%BA%A4%E6%B5%81%E7%BE%A4-green)](https://t.me/unofficialV2board)

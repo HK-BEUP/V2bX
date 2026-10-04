@@ -3,6 +3,7 @@ package limiter
 import (
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,8 @@ func Init() {
 }
 
 type Limiter struct {
+	mu            sync.Mutex
+	ownerInfo     map[int]*UserLimitInfo
 	DomainRules   []*regexp.Regexp
 	ProtocolRules []string
 	SpeedLimit    int
@@ -28,7 +31,7 @@ type Limiter struct {
 	OldUserOnline *sync.Map      // Key: Ip, value: Uid
 	UUIDtoUID     map[string]int // Key: UUID, value: Uid
 	UserLimitInfo *sync.Map      // Key: TagUUID value: UserLimitInfo
-	SpeedLimiter  *sync.Map      // key: TagUUID, value: *ratelimit.Bucket
+	SpeedLimiter  *sync.Map      // key: owner UID, value: *ratelimit.Bucket
 	AliveList     map[int]int    // Key: Uid, value: alive_ip
 }
 
@@ -44,6 +47,7 @@ type UserLimitInfo struct {
 func AddLimiter(tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveList map[int]int) *Limiter {
 	info := &Limiter{
 		SpeedLimit:    l.SpeedLimit,
+		ownerInfo:     make(map[int]*UserLimitInfo),
 		UserOnlineIP:  new(sync.Map),
 		UserLimitInfo: new(sync.Map),
 		SpeedLimiter:  new(sync.Map),
@@ -53,7 +57,11 @@ func AddLimiter(tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveLi
 	uuidmap := make(map[string]int)
 	for i := range users {
 		uuidmap[users[i].Uuid] = users[i].Id
-		userLimit := &UserLimitInfo{}
+		userLimit := info.ownerInfo[users[i].Id]
+		if userLimit == nil {
+			userLimit = &UserLimitInfo{}
+			info.ownerInfo[users[i].Id] = userLimit
+		}
 		userLimit.UID = users[i].Id
 		if users[i].SpeedLimit != 0 {
 			userLimit.SpeedLimit = users[i].SpeedLimit
@@ -88,33 +96,61 @@ func DeleteLimiter(tag string) {
 }
 
 func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel.UserInfo) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	for i := range deleted {
 		l.UserLimitInfo.Delete(format.UserTag(tag, deleted[i].Uuid))
 		l.UserOnlineIP.Delete(format.UserTag(tag, deleted[i].Uuid))
-		l.SpeedLimiter.Delete(format.UserTag(tag, deleted[i].Uuid))
+		// Keep the shared account bucket when removing only one credential.
 		delete(l.UUIDtoUID, deleted[i].Uuid)
-		delete(l.AliveList, deleted[i].Id)
+		// Other credentials retain the same account-level alive count.
+	}
+	// Remove a bucket only when this owner has no remaining or incoming credential.
+	for _, removed := range deleted {
+		remains := false
+		for _, uid := range l.UUIDtoUID {
+			if uid == removed.Id {
+				remains = true
+				break
+			}
+		}
+		if !remains {
+			for _, next := range added {
+				if next.Id == removed.Id {
+					remains = true
+					break
+				}
+			}
+		}
+		if !remains {
+			l.SpeedLimiter.Delete(accountBucketKey(removed.Id))
+			delete(l.AliveList, removed.Id)
+			delete(l.ownerInfo, removed.Id)
+		}
 	}
 	for i := range added {
-		userLimit := &UserLimitInfo{
-			UID: added[i].Id,
+		next := added[i]
+		userLimit := l.ownerInfo[next.Id]
+		if userLimit == nil {
+			userLimit = &UserLimitInfo{UID: next.Id}
+			l.ownerInfo[next.Id] = userLimit
 		}
-		if added[i].SpeedLimit != 0 {
-			userLimit.SpeedLimit = added[i].SpeedLimit
-			userLimit.ExpireTime = 0
+		if userLimit.SpeedLimit != next.SpeedLimit {
+			l.SpeedLimiter.Delete(accountBucketKey(next.Id))
 		}
-		if added[i].DeviceLimit != 0 {
-			userLimit.DeviceLimit = added[i].DeviceLimit
-		}
-		userLimit.OverLimit = false
-		l.UserLimitInfo.Store(format.UserTag(tag, added[i].Uuid), userLimit)
-		l.UUIDtoUID[added[i].Uuid] = added[i].Id
+		userLimit.SpeedLimit = next.SpeedLimit
+		userLimit.DeviceLimit = next.DeviceLimit
+		l.UserLimitInfo.Store(format.UserTag(tag, next.Uuid), userLimit)
+		l.UUIDtoUID[next.Uuid] = next.Id
 	}
 }
 
 func (l *Limiter) UpdateDynamicSpeedLimit(tag, uuid string, limit int, expire time.Time) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if v, ok := l.UserLimitInfo.Load(format.UserTag(tag, uuid)); ok {
 		info := v.(*UserLimitInfo)
+		l.SpeedLimiter.Delete(accountBucketKey(info.UID))
 		info.DynamicSpeedLimit = limit
 		info.ExpireTime = expire.Unix()
 	} else {
@@ -124,6 +160,8 @@ func (l *Limiter) UpdateDynamicSpeedLimit(tag, uuid string, limit int, expire ti
 }
 
 func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool) (Bucket *ratelimit.Bucket, Reject bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	// check if ipv4 mapped ipv6
 	ip = strings.TrimPrefix(ip, "::ffff:")
 
@@ -137,16 +175,11 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 		deviceLimit = u.DeviceLimit
 		uid = u.UID
 		if u.ExpireTime < time.Now().Unix() && u.ExpireTime != 0 {
-			if u.SpeedLimit != 0 {
-				userLimit = u.SpeedLimit
-				u.DynamicSpeedLimit = 0
-				u.ExpireTime = 0
-			} else {
-				l.UserLimitInfo.Delete(taguuid)
-			}
-		} else {
-			userLimit = determineSpeedLimit(u.SpeedLimit, u.DynamicSpeedLimit)
+			u.DynamicSpeedLimit = 0
+			u.ExpireTime = 0
+			l.SpeedLimiter.Delete(accountBucketKey(uid))
 		}
+		userLimit = determineSpeedLimit(u.SpeedLimit, u.DynamicSpeedLimit)
 	} else {
 		return nil, true
 	}
@@ -188,10 +221,10 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 	limit := int64(determineSpeedLimit(nodeLimit, userLimit)) * 1000000 / 8 // If you need the Speed limit
 	if limit > 0 {
 		Bucket = ratelimit.NewBucketWithQuantum(time.Second, limit, limit) // Byte/s
-		if v, ok := l.SpeedLimiter.LoadOrStore(taguuid, Bucket); ok {
+		if v, ok := l.SpeedLimiter.LoadOrStore(accountBucketKey(uid), Bucket); ok {
 			return v.(*ratelimit.Bucket), false
 		} else {
-			l.SpeedLimiter.Store(taguuid, Bucket)
+			l.SpeedLimiter.Store(accountBucketKey(uid), Bucket)
 			return Bucket, false
 		}
 	} else {
@@ -200,7 +233,10 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 }
 
 func (l *Limiter) GetOnlineDevice() (*[]panel.OnlineUser, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	var onlineUser []panel.OnlineUser
+	seen := make(map[panel.OnlineUser]bool)
 	l.OldUserOnline = new(sync.Map)
 	l.UserOnlineIP.Range(func(key, value interface{}) bool {
 		taguuid := key.(string)
@@ -209,7 +245,11 @@ func (l *Limiter) GetOnlineDevice() (*[]panel.OnlineUser, error) {
 			uid := value.(int)
 			ip := key.(string)
 			l.OldUserOnline.Store(ip, uid)
-			onlineUser = append(onlineUser, panel.OnlineUser{UID: uid, IP: ip})
+			entry := panel.OnlineUser{UID: uid, IP: ip}
+			if !seen[entry] {
+				seen[entry] = true
+				onlineUser = append(onlineUser, entry)
+			}
 			return true
 		})
 		l.UserOnlineIP.Delete(taguuid) // Reset online device
@@ -222,4 +262,12 @@ func (l *Limiter) GetOnlineDevice() (*[]panel.OnlineUser, error) {
 type UserIpList struct {
 	Uid    int      `json:"Uid"`
 	IpList []string `json:"Ips"`
+}
+
+func accountBucketKey(uid int) string { return "owner:" + strconv.Itoa(uid) }
+
+func (l *Limiter) UpdateAliveList(alive map[int]int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.AliveList = alive
 }

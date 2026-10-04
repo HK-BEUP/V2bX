@@ -13,6 +13,8 @@ import (
 )
 
 type Controller struct {
+ transfer *transferHost
+
 	server                    vCore.Core
 	apiClient                 *panel.Client
 	tag                       string
@@ -41,6 +43,9 @@ func NewController(server vCore.Core, api *panel.Client, config *conf.Options) *
 
 // Start implement the Start() function of the service interface
 func (c *Controller) Start() error {
+ if c.Options.TransferAccounting != nil && c.Options.LegacyAccounting != nil {return errors.New("accounting modes are mutually exclusive")}
+ if c.Options.TransferAccounting != nil { return c.startTransfer() }
+ if c.Options.LegacyAccounting != nil { return c.startLegacy() }
 	// First fetch Node Info
 	var err error
 	node, err := c.apiClient.GetNodeInfo()
@@ -99,6 +104,7 @@ func (c *Controller) Start() error {
 
 // Close implement the Close() function of the service interface
 func (c *Controller) Close() error {
+ if c.Options.TransferAccounting != nil || c.Options.LegacyAccounting != nil { return c.closeTransfer() }
 	limiter.DeleteLimiter(c.tag)
 	if c.nodeInfoMonitorPeriodic != nil {
 		c.nodeInfoMonitorPeriodic.Close()

@@ -1,61 +1,75 @@
-# Replace .github/workflows/release.yml; artifact-only, no automatic publication.
-name: HK-BEUP Xray candidate
+name: HK-BEUP legacy release
 on:
-  push:
-    branches: [beup/xray-observe-rc1]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Candidate version, e.g. v25.12.2-beup-observe-rc.1'
+        description: 'New immutable release tag'
         required: true
-      scripts_sha:
-        description: 'Reviewed full commit SHA of HK-BEUP/V2bX-script'
-        required: true
+        default: 'v25.12.2-beup-legacy.1'
+      publish:
+        description: 'Publish both verified architectures as the latest release'
+        type: boolean
+        default: false
 permissions:
   contents: read
+concurrency:
+  group: beup-legacy-release
+  cancel-in-progress: false
 jobs:
   verify-and-package:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       GOEXPERIMENT: jsonv2
       GOTOOLCHAIN: local
-      VERSION: ${{ inputs.version || 'v25.12.2-beup-observe-rc.1' }}
-      SCRIPTS_SHA: ${{ inputs.scripts_sha || 'b74ad979a2199e2a733dbfb14cd2881a11d13c40' }}
+      GOMAXPROCS: '2'
+      VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Validate dispatch values
-        shell: bash
-        run: |
-          [[ "$VERSION" =~ ^v[0-9][A-Za-z0-9._-]{0,99}$ ]]
-          [[ "$SCRIPTS_SHA" =~ ^[0-9a-f]{40}$ ]]
-      - uses: actions/checkout@v4
-        with:
-          repository: HK-BEUP/V2bX-script
-          ref: ${{ env.SCRIPTS_SHA }}
-          path: _install
-          persist-credentials: false
+      - name: Validate version
+        run: '[[ "$VERSION" =~ ^v[0-9][A-Za-z0-9._-]{0,99}$ ]]'
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.5'
-      - name: Installer fault tests
+      - name: Installer and failure recovery
+        working-directory: release/install
         run: |
-          cd _install
-          python3 -m unittest -v test_upgrade.py
+          python3 -m unittest -q test_upgrade.py
           bash -n install.sh V2bX.sh
-      - name: Observer and core race regression
-        run: go test -count=1 -mod=readonly -race -tags xray -skip TestREALITYVisionEncryptedLoopback ./common/beupobserve ./core/xray/... ./cmd
-      - name: Real REALITY and Vision acceptance
-        # The pinned Xray Vision implementation uses unsafe pointer arithmetic;
-        # normal build acceptance is separate from race/checkptr regression.
-        run: go test -count=3 -timeout 120s -mod=readonly -tags xray -run TestREALITYVisionEncryptedLoopback ./core/xray
-      - name: Build both Linux packages
-        run: python3 release/package.py --source . --scripts _install --version "$VERSION" --output candidate-artifacts
+          shellcheck -S error install.sh V2bX.sh
+      - name: Legacy report and lifecycle integration
+        run: go test -p 2 -count=1 -mod=readonly -tags 'xray beupqa' -run 'Legacy|InitialLegacy' ./api/panel ./node ./common/beuptransfer ./conf
+      - name: REALITY and Vision loopback
+        run: go test -p 2 -count=1 -timeout 120s -mod=readonly -tags xray -run TestREALITYVisionEncryptedLoopback ./core/xray
+      - name: Package amd64 and arm64
+        run: python3 release/package.py --source . --scripts release/install --version "$VERSION" --output candidate-artifacts
       - uses: actions/upload-artifact@v4
         with:
-          name: xray-candidate
+          name: legacy-packages
           path: candidate-artifacts/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+  publish:
+    if: ${{ inputs.publish }}
+    needs: verify-and-package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ inputs.version }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: legacy-packages
+          path: artifacts
+      - name: Validate and publish once
+        shell: bash
+        run: |
+          cd artifacts
+          sha256sum --check SHA256SUMS
+          gh release create "$VERSION" V2bX-linux-64.zip V2bX-linux-arm64-v8a.zip SHA256SUMS package-verification.json --target "$SOURCE_SHA" --title "HK-BEUP Legacy Horizon $VERSION" --notes '旧 Redis/Horizon 增强版：稳定报告去重、持久化重试、退出尾流确认，新装日志关闭。支持 Linux/systemd amd64/arm64。已有配置和 journal 保留，既有节点不会自动更新。' --latest

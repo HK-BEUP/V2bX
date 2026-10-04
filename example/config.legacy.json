@@ -1,0 +1,18 @@
+{
+  "Log": {
+    "Level": "error",
+    "Output": "/dev/null"
+  },
+  "Cores": [
+    {
+      "Type": "xray",
+      "Log": {
+        "Level": "none",
+        "AccessPath": "/dev/null",
+        "ErrorPath": "/dev/null"
+      },
+      "AssetPath": "/etc/V2bX/"
+    }
+  ],
+  "Nodes": []
+}

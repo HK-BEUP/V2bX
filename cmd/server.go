@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"errors"
+	"github.com/InazumaV/V2bX/common/beupguard"
 	beupobserve "github.com/InazumaV/V2bX/common/beupobserve"
 	"os"
 	"os/signal"
 	"runtime"
+	"sync"
 	"syscall"
 
 	"github.com/InazumaV/V2bX/conf"
@@ -63,6 +66,11 @@ func serverHandle(_ *cobra.Command, _ []string) {
 		log.SetOutput(f)
 	}
 	limiter.Init()
+	stopGuard, guardErr := beupguard.StartFromEnvironment()
+	if guardErr != nil {
+		log.Error("BEUP isolation startup incomplete; verify each controller status, proxy service continues")
+	}
+	defer stopGuard()
 	stopObservation, observationErr := beupobserve.StartFromEnvironment()
 	if observationErr != nil {
 		log.Error("BEUP observation settings rejected; proxy continues without telemetry")
@@ -79,9 +87,24 @@ func serverHandle(_ *cobra.Command, _ []string) {
 		log.WithField("err", err).Error("Start core failed")
 		return
 	}
-	defer vc.Close()
+	// Serialize shutdown and watched configuration replacement.
+	var lifecycle sync.Mutex
+	stopping := false
 	log.Info("Core ", vc.Type(), " started")
 	nodes := node.New()
+	defer func() {
+		lifecycle.Lock()
+		defer lifecycle.Unlock()
+		stopping = true
+		if err := nodes.Close(); err != nil {
+			log.Error("Node accounting shutdown incomplete; retain journal and reconcile before restart")
+		}
+		if vc != nil {
+			if err := vc.Close(); err != nil {
+				log.Error("Core close failed")
+			}
+		}
+	}()
 	err = nodes.Start(c.NodeConfig, vc)
 	if err != nil {
 		log.WithField("err", err).Error("Run nodes failed")
@@ -91,37 +114,46 @@ func serverHandle(_ *cobra.Command, _ []string) {
 	xdns := os.Getenv("XRAY_DNS_PATH")
 	sdns := os.Getenv("SING_DNS_PATH")
 	if watch {
-		err = c.Watch(config, xdns, sdns, func() {
+		stopWatch, watchErr := conf.WatchCandidate(config, xdns, sdns, func(next *conf.Conf) error {
+			lifecycle.Lock()
+			defer lifecycle.Unlock()
+			if stopping {
+				return errors.New("server stopping")
+			}
+			if err := conf.ValidateTransferReload(c, next); err != nil {
+				return err
+			}
+			if err := nodes.Close(); err != nil {
+				log.Error("Reload refused: accounting shutdown incomplete; journal retained")
+				return err
+			}
 			beupobserve.Reset()
-			nodes.Close()
-			err = vc.Close()
-			if err != nil {
-				log.WithField("err", err).Error("Restart node failed")
-				return
+			if err := vc.Close(); err != nil {
+				return err
 			}
-			vc, err = vCore.NewCore(c.CoresConfig)
+			beupguard.ResetBindings()
+			candidate, err := vCore.NewCore(next.CoresConfig)
 			if err != nil {
-				log.WithField("err", err).Error("New core failed")
-				return
+				return err
 			}
-			err = vc.Start()
-			if err != nil {
-				log.WithField("err", err).Error("Start core failed")
-				return
+			vc = candidate
+			if err = vc.Start(); err != nil {
+				return err
 			}
-			log.Info("Core ", vc.Type(), " restarted")
-			err = nodes.Start(c.NodeConfig, vc)
-			if err != nil {
-				log.WithField("err", err).Error("Run nodes failed")
-				return
+			c = next
+			if err = nodes.Start(c.NodeConfig, vc); err != nil {
+				return err
 			}
 			log.Info("Nodes restarted")
 			runtime.GC()
+			return nil
 		})
-		if err != nil {
-			log.WithField("err", err).Error("start watch failed")
+		if watchErr != nil {
+			log.Error("Start configuration watcher failed")
 			return
 		}
+		// Registered after node cleanup, so stop and join watcher first.
+		defer stopWatch()
 	}
 	// clear memory
 	runtime.GC()
