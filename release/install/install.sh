@@ -97,6 +97,53 @@ V2bX version      - 查看 V2bX 版本
 ------------------------------------------
 """
 
+
+def should_install(meta, version, root=None):
+    from pathlib import Path
+    import fcntl
+    from contextlib import ExitStack
+    root = Path('/') if root is None else Path(root)
+    expected = meta.get('binary_sha256', '')
+    if meta.get('version') != version or not re.fullmatch(r'[0-9a-f]{64}', expected):
+        raise SystemExit('安装包版本或程序校验信息无效；保留现有程序')
+    program = root/'usr/local/V2bX'
+    binary = program/'V2bX'
+    if not binary.exists() and not binary.is_symlink():
+        return True
+    if program.is_symlink() or binary.is_symlink() or not binary.is_file():
+        raise SystemExit('现有程序路径异常；保留现状，请人工核对')
+    # Only inspect an existing upgrade lock; this check never changes node files.
+    with ExitStack() as stack:
+        lock_path = root/'run/lock/beup-v2bx-upgrade.lock'
+        if lock_path.exists():
+            lock = stack.enter_context(open(lock_path, 'r'))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise SystemExit('已有安装或配置操作进行中，请等待完成；本次未执行安装')
+        digest = hashlib.sha256()
+        with open(binary, 'rb') as current:
+            for chunk in iter(lambda: current.read(1048576), b''):
+                digest.update(chunk)
+        if digest.hexdigest() == expected:
+            say('已安装相同版本 V2bX '+version+'，程序校验一致，已跳过重复安装。')
+            print('节点运行状态、配置和流量数据保持不变。', flush=True)
+            print('输入 V2bX 打开管理菜单；如需首次配置，使用 V2bX generate。', flush=True)
+            return False
+    say('检测到已安装 V2bX，现有程序与目标版本不同。', 'yellow')
+    say('继续升级会暂时中断此服务的全部节点连接，并等待最后流量结清。', 'yellow')
+    try:
+        tty = open('/dev/tty', 'r')
+    except OSError:
+        print('无交互终端，已取消升级；现有节点保持不变。', flush=True)
+        return False
+    with tty:
+        print('是否继续升级？(y/N): ', end='', flush=True)
+        confirmed = tty.readline().strip().lower() == 'y'
+    if not confirmed:
+        print('已取消升级；现有节点保持不变。', flush=True)
+    return confirmed
+
 def main():
     version = sys.argv[1]
     if platform.system() != 'Linux' or not os.path.isdir('/run/systemd/system'):
@@ -133,6 +180,8 @@ def main():
             meta=json.loads(z.read('RELEASE.json'))
             if meta.get('legacy_accounting_v1') is not True:
                 raise SystemExit('该包不含旧队列保护；取消安装，保留现有程序和 journal')
+        if not should_install(meta, version):
+            return
         was_active = service_flag('is-active')
         print('正在安装 V2bX，已有配置将保留…', flush=True)
         if was_active:
