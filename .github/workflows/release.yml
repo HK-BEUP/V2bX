@@ -5,7 +5,7 @@ on:
       version:
         description: 'New immutable release tag'
         required: true
-        default: 'v25.12.2-beup-legacy.1'
+        default: 'v25.12.2-beup-legacy.2'
       publish:
         description: 'Publish both verified architectures as the latest release'
         type: boolean
@@ -36,9 +36,18 @@ jobs:
       - name: Installer and failure recovery
         working-directory: release/install
         run: |
-          python3 -m unittest -q test_upgrade.py
+          python3 -m unittest -q test_upgrade.py test_openrc.py test_repeat.py
           bash -n install.sh V2bX.sh
           shellcheck -S error install.sh V2bX.sh
+      - name: Alpine OpenRC installation and rollback
+        run: |
+          cat > "$RUNNER_TEMP/beup-alpine.Dockerfile" <<'EOF'
+          FROM alpine:3.21@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
+          RUN apk add --no-cache openrc python3 bash gcc musl-dev
+          COPY . /qa/
+          EOF
+          docker build -t beup-openrc-qa -f "$RUNNER_TEMP/beup-alpine.Dockerfile" release/install
+          docker run --rm --init --cpus=2 --memory=768m -e BEUP_OPENRC_NATIVE_QA=1 beup-openrc-qa sh -ec 'mkdir -p /run/openrc; touch /run/openrc/softlevel; rc-status -a >/dev/null; python3 -u /qa/test_native.py'
       - name: Legacy report and lifecycle integration
         run: go test -p 2 -count=1 -mod=readonly -tags 'xray beupqa' -run 'Legacy|InitialLegacy' ./api/panel ./node ./common/beuptransfer ./conf
       - name: REALITY and Vision loopback
@@ -72,4 +81,4 @@ jobs:
         run: |
           cd artifacts
           sha256sum --check SHA256SUMS
-          gh release create "$VERSION" V2bX-linux-64.zip V2bX-linux-arm64-v8a.zip SHA256SUMS package-verification.json --target "$SOURCE_SHA" --title "HK-BEUP Legacy Horizon $VERSION" --notes '旧 Redis/Horizon 增强版：稳定报告去重、持久化重试、退出尾流确认，新装日志关闭。支持 Linux/systemd amd64/arm64。已有配置和 journal 保留，既有节点不会自动更新。' --latest
+          gh release create "$VERSION" V2bX-linux-64.zip V2bX-linux-arm64-v8a.zip SHA256SUMS package-verification.json --target "$SOURCE_SHA" --title "HK-BEUP Legacy Horizon $VERSION" --notes '旧 Redis/Horizon 增强版：稳定报告去重、持久化重试、退出尾流确认，新装日志关闭。支持 Linux/systemd 与 Alpine/OpenRC amd64/arm64。已有配置和 journal 保留，既有节点不会自动更新。' --latest

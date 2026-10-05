@@ -39,7 +39,7 @@ def main():
             for name in ['geoip.dat','geosite.dat']:files[name]=(a.source/'example'/name).read_bytes()
             files['XRAY_LICENSE']=(a.source/'third_party/xray-core/LICENSE').read_bytes()
             files['config.json']=json.dumps({'Log':{'Level':'error','Output':'/dev/null'},'Cores':[{'Type':'xray','Log':{'Level':'none','AccessPath':'/dev/null','ErrorPath':'/dev/null'},'AssetPath':'/etc/V2bX/'}],'Nodes':[]},indent=2).encode()+b'\n'
-            files['RELEASE.json']=json.dumps({'version':a.version,'cores':['xray'],'profile':'VLESS+TCP+REALITY+Vision','binary_sha256':sha(data),'source_sha256':source_sha,'observation_enabled_by_default':False,'legacy_accounting_v1':True,'node_logs_enabled_by_default':False,'acceptance':'runtime based on deployed legacy revision2; installation requires per-node panel verification'},indent=2).encode()+b'\n'
+            files['RELEASE.json']=json.dumps({'version':a.version,'cores':['xray'],'profile':'VLESS+TCP+REALITY+Vision','binary_sha256':sha(data),'source_sha256':source_sha,'observation_enabled_by_default':False,'legacy_accounting_v1':True,'service_managers':['systemd','openrc'],'node_logs_enabled_by_default':False,'acceptance':'runtime based on deployed legacy revision2; installation requires per-node panel verification'},indent=2).encode()+b'\n'
             name='V2bX-linux-'+friendly+'.zip';target=a.output/name
             with zipfile.ZipFile(target,'x',compression=zipfile.ZIP_DEFLATED,compresslevel=9) as z:
                 for n,b in sorted(files.items()):

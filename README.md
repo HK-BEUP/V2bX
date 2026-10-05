@@ -1,9 +1,9 @@
 # HK-BEUP V2bX 旧队列增强版
 
-一键安装（Linux/systemd，root，curl + Python 3）：
+一键安装（Linux/systemd 或 Alpine/OpenRC，root，Python 3）：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/HK-BEUP/V2bX-script/master/install.sh)
+wget -N https://raw.githubusercontent.com/HK-BEUP/V2bX-script/master/install.sh && bash install.sh
 ```
 
 填写面板地址、API Key、节点编号后确认，自动完成新节点配置与启动。新装使用旧 Redis/Horizon，

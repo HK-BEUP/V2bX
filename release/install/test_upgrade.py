@@ -169,6 +169,7 @@ class BootstrapTests(unittest.TestCase):
         if mode=='missing':sums=''
         if mode=='corrupt':data+=b'bad'
         class Response(io.BytesIO):
+            headers = {}
             def geturl(self):return 'https://github.com/synthetic'
         def fetch(req,**_):
             url=req.full_url
@@ -176,12 +177,14 @@ class BootstrapTests(unittest.TestCase):
             if mode=='network':raise OSError('synthetic network failure')
             return Response(sums.encode() if url.endswith('SHA256SUMS') else data)
         code=Path(__file__).with_name('install.sh').read_text().split("<<'PY'\n",1)[1].rsplit('\nPY',1)[0]
+        import types
+        module=types.ModuleType('bootstrap_test');exec(compile(code,'bootstrap','exec'),module.__dict__)
         original_umask=os.umask(0o077);os.umask(original_umask)
         try:
-            with patch('sys.argv',['-',VERSION]),patch('platform.system',return_value='Linux'),patch('platform.machine',return_value='x86_64'),patch('os.path.isdir',return_value=True),patch('urllib.request.urlopen',side_effect=fetch),patch('subprocess.run') as run, patch('upgrade.load_config',return_value={'Nodes':[{}]}):
-                if mode=='ok':exec(compile(code,'bootstrap','exec'),{});self.assertEqual(run.call_count,1)
+            with patch('sys.argv',['-',VERSION]),patch('platform.system',return_value='Linux'),patch('platform.machine',return_value='x86_64'),patch('os.path.isdir',return_value=True),patch('urllib.request.urlopen',side_effect=fetch),patch('subprocess.run') as run, patch('upgrade.load_config',return_value={'Nodes':[{}]}),patch.object(module,'should_install',return_value=True),patch.object(module,'service_flag',return_value=False):
+                if mode=='ok':module.main();self.assertEqual(run.call_count,1)
                 else:
-                    with self.assertRaises((SystemExit,OSError)):exec(compile(code,'bootstrap','exec'),{})
+                    with self.assertRaises((SystemExit,OSError)):module.main()
                     run.assert_not_called()
         finally:os.umask(original_umask)
     def test_verified_bootstrap(self):self.run_bootstrap('ok')

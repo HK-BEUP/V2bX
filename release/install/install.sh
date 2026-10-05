@@ -60,7 +60,16 @@ def say(text, color='green'):
 
 def service_flag(kind):
     try:
-        return subprocess.run(['systemctl',kind,'--quiet','V2bX'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10).returncode == 0
+        if os.path.isdir('/run/systemd/system'):
+            cmd=['systemctl',kind,'--quiet','V2bX']
+        elif os.path.isdir('/run/openrc'):
+            if kind == 'is-enabled':
+                from pathlib import Path
+                return any(p.is_symlink() for p in Path('/etc/runlevels').glob('*/V2bX'))
+            cmd=['rc-service','V2bX','status']
+        else:
+            return None
+        return subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return None
 
@@ -146,8 +155,10 @@ def should_install(meta, version, root=None):
 
 def main():
     version = sys.argv[1]
-    if platform.system() != 'Linux' or not os.path.isdir('/run/systemd/system'):
-        raise SystemExit('仅支持 Linux/systemd；尚未修改系统')
+    systemd = os.path.isdir('/run/systemd/system')
+    openrc = not systemd and os.path.isdir('/run/openrc') and all(shutil.which(x) for x in ('rc-service','rc-update','start-stop-daemon'))
+    if platform.system() != 'Linux' or not (systemd or openrc):
+        raise SystemExit('仅支持 Linux/systemd 或 Alpine/OpenRC；尚未修改系统')
     arch = {'x86_64':'64', 'aarch64':'arm64-v8a'}.get(platform.machine())
     if not arch: raise SystemExit('不支持此 CPU 架构；尚未修改系统')
     print('架构: '+arch, flush=True)
@@ -180,6 +191,8 @@ def main():
             meta=json.loads(z.read('RELEASE.json'))
             if meta.get('legacy_accounting_v1') is not True:
                 raise SystemExit('该包不含旧队列保护；取消安装，保留现有程序和 journal')
+        if openrc and 'openrc' not in meta.get('service_managers',[]):
+            raise SystemExit('该版本安装包尚不支持 Alpine/OpenRC；保留现有程序，请使用兼容版本')
         if not should_install(meta, version):
             return
         was_active = service_flag('is-active')

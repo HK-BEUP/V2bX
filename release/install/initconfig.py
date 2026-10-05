@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 from urllib.parse import urlsplit
-from upgrade import Systemd, digest, load_config, plain_path
+from upgrade import service_manager, digest, load_config, plain_path
 
 def make_config(host,key,node_ids):
     u=urlsplit(host)
@@ -32,9 +32,11 @@ def main(start=False):
     if os.geteuid()!=0: raise SystemExit('需要 root')
     os.umask(0o077)
     path=Path('/etc/V2bX/config.json');plain_path(path)
+    service=service_manager()
+    Path('/run/lock').mkdir(parents=True,exist_ok=True)
     with open('/run/lock/beup-v2bx-upgrade.lock','a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        if subprocess.run(['systemctl','is-active','--quiet','V2bX']).returncode==0:
+        if service.active():
             raise SystemExit('服务运行中；初始化不会修改正在使用的配置')
         baseline=digest(path) if path.exists() else None
         if path.exists() and load_config(path)['Nodes']: raise SystemExit('已有节点配置，拒绝重写；升级无需重新配置')
@@ -52,11 +54,11 @@ def main(start=False):
         with os.fdopen(fd,'w') as f: json.dump(c,f,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
         os.replace(tmp,path)
         if start:
-            service = Systemd(); service.required_ports = set()
+            service.required_ports = set()
             service.start()
             if not service.healthy():
                 raise RuntimeError('配置已保留，启动尚未通过监听检查；请核对面板地址、节点参数和连接状态后执行 v2bx status')
-            service.call('enable', 'V2bX')
+            service.enable()
             print('安装及启动完成，已设置开机自启；请在面板确认该节点流量入账。')
         else:
             print('配置已保存。执行 v2bx start 启动、v2bx enable 开机自启。')

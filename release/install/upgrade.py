@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verified, conservative systemd upgrade. No panel requests or account writes.
+"""Verified, conservative systemd/OpenRC upgrade. No panel requests or account writes.
 
 The CLI has fixed production paths. Tests inject a private root and fake service
 into the transaction function, never via an environment variable or CLI flag.
@@ -97,6 +97,9 @@ def extract_package(archive,expected,version,machine,dest):
     if load_config(dest/'config.json')['Nodes']: raise ValueError('安装包必须使用无凭据的空 Nodes 示例')
 
 class Systemd:
+    unit_path = "etc/systemd/system/V2bX.service"
+    unit_mode = 0o644
+    def enable(self): self.call("enable", "V2bX")
     @staticmethod
     def listening(pid):
         if pid<=0:return set()
@@ -157,6 +160,117 @@ class Systemd:
             else:stable_seconds=0
         return False
 
+OPENRC_UNIT='''#!/sbin/openrc-run
+name="V2bX"
+description="V2bX"
+command="/usr/local/V2bX/V2bX"
+command_args="server"
+command_user="root"
+directory="/usr/local/V2bX"
+pidfile="/run/V2bX.pid"
+command_background="yes"
+output_log="/dev/null"
+error_log="/dev/null"
+# V2bX bounds each accounting scope's graceful close. Never SIGKILL its journal.
+retry="TERM/86400"
+depend() {
+    need net
+}
+'''
+
+OPENRC_ORIGINAL='''#!/sbin/openrc-run
+name="V2bX"
+description="V2bX"
+command="/usr/local/V2bX/V2bX"
+command_args="server"
+command_user="root"
+pidfile="/run/V2bX.pid"
+command_background="yes"
+depend() {
+    need net
+}
+'''
+
+class OpenRC:
+    unit_path='etc/init.d/V2bX'
+    unit_mode=0o755
+    unit_text=OPENRC_UNIT
+    upgrade_unit=True
+    watch_paths=('etc/conf.d/V2bX',)
+    listening=staticmethod(Systemd.listening)
+
+    def call(self,*args,check=True,timeout=90):
+        return subprocess.run(list(args),check=check,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout)
+    def active(self):
+        return self.call('rc-service','V2bX','status',check=False,timeout=10).returncode==0
+    def identity(self):
+        try:
+            value=Path('/run/V2bX.pid').read_text().strip()
+            if not value.isdigit() or int(value)<=1: raise ValueError('OpenRC PID 文件无效')
+            pid=int(value); proc=Path('/proc')/value
+            if not proc.exists():return None
+            exe=os.readlink(proc/'exe')
+            if exe!='/usr/local/V2bX/V2bX': raise ValueError('PID 不属于当前 V2bX，保留现状')
+            args=(proc/'cmdline').read_bytes().split(b'\0')
+            if args[:2]!=[b'/usr/local/V2bX/V2bX',b'server'] or any(args[2:]):
+                raise ValueError('自定义 V2bX 启动参数需人工核对')
+            # starttime protects against PID reuse while checking stability.
+            fields=(proc/'stat').read_text().rsplit(')',1)[1].split()
+            if fields[0]=='Z':return None
+            return (pid,fields[19])
+        except FileNotFoundError:return None
+    def validate(self):
+        if Path('/etc/conf.d/V2bX').exists() or Path('/etc/conf.d/V2bX').is_symlink():
+            raise ValueError('已有 OpenRC conf.d 覆盖配置需人工核对；未停止服务')
+        path=Path('/etc/init.d/V2bX')
+        def normalize(text):
+            return '\n'.join(x.strip() for x in text.splitlines() if x.strip() and not x.lstrip().startswith('#'))
+        if path.exists() and normalize(path.read_text()) not in {normalize(OPENRC_UNIT),normalize(OPENRC_ORIGINAL)}:
+            raise ValueError('自定义 OpenRC 服务需人工核对；未停止服务')
+        self.required_ports=set()
+        identity=self.identity()
+        if self.active():
+            if not identity:raise ValueError('OpenRC 状态与进程不一致；未停止服务')
+            self.required_ports=self.listening(identity[0])
+            if not self.required_ports:raise ValueError('运行服务没有可核对的 TCP 监听')
+        elif identity:raise ValueError('存在未由 OpenRC 正常管理的 V2bX 进程；未停止服务')
+    def stop(self):
+        identity=self.identity()
+        if identity:
+            # The upstream init script waits only five seconds. Use the same
+            # OpenRC daemon tool with the full accounting budget, never KILL.
+            budget=getattr(self,'stop_budget',180)
+            result=self.call('start-stop-daemon','--stop','--exec','/usr/local/V2bX/V2bX',
+                             '--pidfile','/run/V2bX.pid','--retry','TERM/'+str(budget),
+                             check=False,timeout=budget+10)
+            if result.returncode or self.identity():
+                raise RuntimeError('原进程尚未确认退出；未替换程序，保留流量 journal')
+        # Only clear OpenRC bookkeeping after the verified process is gone.
+        self.call('rc-service','V2bX','zap')
+    def start(self):self.call('rc-service','V2bX','start')
+    def enable(self):self.call('rc-update','add','V2bX','default')
+    def reload(self):pass
+    def healthy(self):
+        initial=self.identity();stable_seconds=0
+        if not initial:return False
+        for _ in range(180):
+            time.sleep(1)
+            if not self.active() or self.identity()!=initial:return False
+            ports=self.listening(initial[0])
+            if ports and self.required_ports.issubset(ports):
+                stable_seconds+=1
+                if stable_seconds>=15:return True
+            else:stable_seconds=0
+        return False
+
+def service_manager():
+    if platform.system()!='Linux':raise ValueError('需要 Linux/systemd 或 Alpine/OpenRC')
+    if Path('/run/systemd/system').is_dir():return Systemd()
+    if Path('/run/openrc').is_dir() and all(shutil.which(x) for x in ('rc-service','rc-update','start-stop-daemon')):
+        return OpenRC()
+    raise ValueError('未找到 systemd 或 OpenRC；尚未修改系统')
+
+
 UNIT='''[Unit]
 Description=V2bX Service
 After=network.target nss-lookup.target
@@ -179,13 +293,13 @@ WantedBy=multi-user.target
 '''
 
 def transaction(archive,expected,version,root,service,machine,probe=None):
-    root=Path(root);program=root/'usr/local/V2bX';config=root/'etc/V2bX';unit=root/'etc/systemd/system/V2bX.service'
+    root=Path(root);program=root/'usr/local/V2bX';config=root/'etc/V2bX';unit=root/getattr(service,'unit_path','etc/systemd/system/V2bX.service')
     for p in (program,config,unit,root/'usr/local/.backups',root/'usr/bin/V2bX',root/'usr/bin/v2bx'): plain_path(p.parent)
     for p in (program,config,unit): plain_path(p)
     for p in (root/'usr/bin/V2bX',root/'usr/bin/v2bx'):
         if p.is_symlink() and os.readlink(p) not in ('/usr/bin/V2bX','/usr/local/V2bX/V2bX.sh'): raise ValueError('未知管理命令链接')
     before=tree_hash(config); existed=program.exists();was_active=service.active()
-    watched=[program/n for n in MANAGED]+[unit]
+    watched=[program/n for n in MANAGED]+[unit]+[root/p for p in getattr(service,'watch_paths',())]
     def fingerprints():
         for p in watched: plain_path(p)
         return {str(p.relative_to(root)):digest(p) if p.exists() else None for p in watched}
@@ -226,11 +340,12 @@ def transaction(archive,expected,version,root,service,machine,probe=None):
         if fingerprints()!=original: raise RuntimeError('程序或服务文件已变化；取消升级')
         record={'version':version,'package_sha256':expected,'was_active':was_active,'config_hashes':before,'original_hashes':original,'status':'prepared'}
         (backup/'transaction.json').write_text(json.dumps(record,indent=2))
-        switched=False;moved=False;created_unit=False;created_config=False;stopped=False;commands_changed=False
+        switched=False;moved=False;created_unit=False;created_config=False;stopped=False;commands_changed=False;updated_unit=False
         try:
             if was_active:
                 service.stop();stopped=True
             if tree_hash(config)!=before: raise RuntimeError('配置变化；已取消切换')
+            if fingerprints()!=original: raise RuntimeError('等待退出期间程序或服务文件已变化；已取消切换')
             if existed: program.rename(backup/'program');moved=True
             new.rename(program);switched=True
             if not existed and not config.exists():
@@ -238,8 +353,15 @@ def transaction(archive,expected,version,root,service,machine,probe=None):
                 shutil.copy2(payload/'config.json',config/'config.json');(config/'config.json').chmod(0o600)
                 for name in ('geoip.dat','geosite.dat'):
                     if (payload/name).exists(): shutil.copy2(payload/name,config/name)
-            if not existed and not unit.exists():
-                unit.parent.mkdir(parents=True,exist_ok=True);unit.write_text(UNIT);created_unit=True;service.reload()
+            if not unit.exists():
+                unit.parent.mkdir(parents=True,exist_ok=True)
+                unit.write_text(getattr(service,'unit_text',UNIT));unit.chmod(getattr(service,'unit_mode',0o644))
+                created_unit=True;service.reload()
+            elif getattr(service,'upgrade_unit',False):
+                updated_unit=True
+                temporary=unit.with_name('.V2bX-'+backup.name)
+                temporary.write_text(service.unit_text);temporary.chmod(service.unit_mode);os.replace(temporary,unit)
+                service.reload()
             if was_active:
                 service.start()
                 if not service.healthy(): raise RuntimeError('新服务未通过稳定启动检查')
@@ -255,6 +377,7 @@ def transaction(archive,expected,version,root,service,machine,probe=None):
             if switched: program.rename(backup/'failed-program')
             if moved: (backup/'program').rename(program)
             if created_unit: unit.unlink();service.reload()
+            elif updated_unit: shutil.copy2(backup/'V2bX.service',unit);service.reload()
             if created_config: config.rename(backup/'new-config')
             if commands_changed:
                 for name,old in commands.items():
@@ -270,14 +393,16 @@ def transaction(archive,expected,version,root,service,machine,probe=None):
         return {'backup':str(backup),'previously_active':was_active,'config_unchanged':not created_config}
 
 def main():
-    if os.geteuid()!=0 or platform.system()!='Linux' or not Path('/run/systemd/system').is_dir(): raise SystemExit('需要 Linux/systemd root')
+    if os.geteuid()!=0: raise SystemExit('需要 root')
+    service=service_manager()
     if len(sys.argv)!=4: raise SystemExit('用法: upgrade.py ZIP SHA256 VERSION')
     os.umask(0o077)
     signal.signal(signal.SIGTERM,lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     # Kernel lock shared with config wizard. Released even on abnormal process exit.
+    Path('/run/lock').mkdir(parents=True,exist_ok=True)
     with open('/run/lock/beup-v2bx-upgrade.lock','a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        result=transaction(Path(sys.argv[1]),sys.argv[2],sys.argv[3],Path('/'),Systemd(),platform.machine())
+        result=transaction(Path(sys.argv[1]),sys.argv[2],sys.argv[3],Path('/'),service,platform.machine())
     print('安装完成；备份：'+result['backup'])
     if result['previously_active']: print('已恢复原 TCP 监听并通过 15 秒进程稳定检查；仍需客户端业务验收')
     else: print('程序已安装，配置与启动由新装向导继续；已有节点保留原停止状态')
