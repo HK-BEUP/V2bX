@@ -2,6 +2,7 @@
 import json,os,platform,subprocess,time,zipfile,hashlib
 from pathlib import Path
 import upgrade as u
+import initconfig
 assert os.environ.get('BEUP_OPENRC_NATIVE_QA')=='1' and Path('/.dockerenv').exists() and Path('/qa/native_fixture.c').exists()
 assert not Path('/etc/V2bX').exists() and not Path('/usr/local/V2bX').exists()
 VERSION='v25.12.2-beup-alpine-qa'
@@ -53,6 +54,26 @@ else:raise AssertionError('failure injection was ignored')
 assert u.digest('/usr/local/V2bX/V2bX')==u.digest('/qa/fixture2') and service.active()
 assert unit.read_text()==u.OPENRC_ORIGINAL and u.digest(config)==sha_config
 print('PASS failed upgrade restored old binary/init/config and healthy listener',flush=True)
+# Exercise menu-15's transaction using the real OpenRC adapter and a local-only fixture.
+# This fixture proves lifecycle/backup behavior, not panel auth or proxy accounting.
+config.write_text(json.dumps(initconfig.make_config('https://panel.example','synthetic-only','42')))
+prior=config.read_bytes();prior_identity=service.identity()
+answers=iter(['','43','YES'])
+manual=initconfig.reconfigure(Path('/'),u.OpenRC(),lambda _:next(answers),lambda _: '')
+assert service.active() and service.identity()!=prior_identity
+assert (Path(manual['backup'])/'etc/V2bX/config.json').read_bytes()==prior
+assert u.load_config(config)['Nodes'][0]['NodeID']==43
+print('PASS OpenRC manual reconfiguration and private backup',flush=True)
+prior=config.read_bytes();answers=iter(['','44','YES'])
+try:initconfig.reconfigure(Path('/'),FailFirst(),lambda _:next(answers),lambda _: '')
+except RuntimeError as e:assert '原运行状态已恢复' in str(e)
+else:raise AssertionError('manual reconfiguration failure injection was ignored')
+assert config.read_bytes()==prior and service.active()
+print('PASS OpenRC failed reconfiguration restored original config and listener',flush=True)
 service.stop()
 assert not service.active() and not service.identity()
+answers=iter(['','44','YES'])
+initconfig.reconfigure(Path('/'),u.OpenRC(),lambda _:next(answers),lambda _: '')
+assert not service.active() and not service.identity()
+assert u.load_config(config)['Nodes'][0]['NodeID']==44
 print(json.dumps({'native_openrc':'pass','fresh_install':True,'upgrade':True,'rollback':True,'logs_off':True,'graceful_wait_seconds':round(elapsed,2),'final_stopped':True}),flush=True)

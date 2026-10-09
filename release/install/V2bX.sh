@@ -603,7 +603,7 @@ EOF
 }
 
 generate_config_file() {
-    python3 /usr/local/V2bX/initconfig.py
+    python3 /usr/local/V2bX/initconfig.py --reconfigure
     return $?
     echo -e "${yellow}V2bX 配置文件生成向导${plain}"
     echo -e "${red}请阅读以下注意事项：${plain}"
@@ -940,7 +940,7 @@ show_usage() {
     echo "V2bX disable      - 取消 V2bX 开机自启"
     echo "V2bX log          - 查看 V2bX 日志"
     echo "V2bX x25519       - 生成 x25519 密钥"
-    echo "V2bX generate     - 生成 V2bX 配置文件"
+    echo "V2bX generate     - 生成或重新配置 V2bX（备份后确认应用）"
     echo "V2bX update       - 更新 V2bX"
     echo "V2bX update x.x.x - 安装 V2bX 指定版本"
     echo "V2bX install      - 安装 V2bX"
@@ -972,7 +972,7 @@ show_menu() {
   ${green}12.${plain} 查看 V2bX 版本
   ${green}13.${plain} 生成 X25519 密钥
   ${green}14.${plain} 升级 V2bX 维护脚本
-  ${green}15.${plain} 生成 V2bX 配置文件
+  ${green}15.${plain} 生成或重新配置 V2bX（备份后确认应用）
   ${green}16.${plain} 放行 VPS 的所有网络端口
   ${green}17.${plain} 退出脚本
  "

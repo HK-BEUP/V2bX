@@ -36,7 +36,7 @@ jobs:
       - name: Installer and failure recovery
         working-directory: release/install
         run: |
-          python3 -m unittest -q test_upgrade.py test_openrc.py test_repeat.py
+          python3 -m unittest -q test_upgrade.py test_openrc.py test_repeat.py test_reconfigure.py test_reconfigure_process.py
           bash -n install.sh V2bX.sh
           shellcheck -S error install.sh V2bX.sh
       - name: Alpine OpenRC installation and rollback
