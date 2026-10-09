@@ -50,6 +50,8 @@ jobs:
           docker run --rm --init --cpus=2 --memory=768m -e BEUP_OPENRC_NATIVE_QA=1 beup-openrc-qa sh -ec 'mkdir -p /run/openrc; touch /run/openrc/softlevel; rc-status -a >/dev/null; python3 -u /qa/test_native.py'
       - name: Legacy report and lifecycle integration
         run: go test -p 2 -count=1 -mod=readonly -tags 'xray beupqa' -run 'Legacy|InitialLegacy' ./api/panel ./node ./common/beuptransfer ./conf
+      - name: Legacy asynchronous reload repetition
+        run: go test -p 2 -count=20 -timeout 180s -mod=readonly -tags 'xray beupqa' -run '^TestLegacyControllerQueueTailReloadRestart$' ./node
       - name: REALITY and Vision loopback
         run: go test -p 2 -count=1 -timeout 120s -mod=readonly -tags xray -run TestREALITYVisionEncryptedLoopback ./core/xray
       - name: Package amd64 and arm64

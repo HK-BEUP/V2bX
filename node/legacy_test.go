@@ -138,6 +138,30 @@ func TestLegacyControllerQueueTailReloadRestart(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
+	// Closing tracked handlers is asynchronous. Mirror the worker retry contract,
+	// but fail on every non-pending error and on a bounded deadline.
+	waitPending := func(label string, step func(context.Context) error) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for {
+			err := step(ctx)
+			if err == nil {
+				if ctx.Err() != nil {
+					t.Fatalf("%s: %v", label, ctx.Err())
+				}
+				return
+			}
+			if !errors.Is(err, beuptransfer.ErrPending) {
+				t.Fatalf("%s: %v", label, err)
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("%s did not settle: %v (last error: %v)", label, ctx.Err(), err)
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
 	c := makeController()
 	if err = c.Start(); err != nil {
 		t.Fatal(err)
@@ -192,9 +216,7 @@ func TestLegacyControllerQueueTailReloadRestart(t *testing.T) {
 	p.port = qaPort(t)
 	p.mu.Unlock()
 	c.transfer.lastPull = time.Time{}
-	if err = c.legacyStep(context.Background()); err != nil {
-		t.Fatal("reload", err)
-	}
+	waitPending("reload", c.legacyStep)
 	if n, e := qaFlow(oldPort, dest, qaUUID); e == nil {
 		n.Close()
 		t.Fatal("old inbound survived reload")
@@ -218,9 +240,7 @@ func TestLegacyControllerQueueTailReloadRestart(t *testing.T) {
 	p.mu.Lock()
 	p.hold = false
 	p.mu.Unlock()
-	if err = c.transfer.session.Seal(context.Background()); err != nil {
-		t.Fatal("async final ACK", err)
-	}
+	waitPending("async final ACK", c.transfer.session.Seal)
 	if err = c.Close(); err != nil {
 		t.Fatal(err)
 	}
